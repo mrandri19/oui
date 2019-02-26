@@ -1,161 +1,268 @@
+(* TODO: ignore *)
+[%%debugger.chrome]
+
 open Html
 
-module Make_App (App: sig
-        type model
-        val initialModel: model
+module Make_App (App : sig
+  type model
 
-        type action
+  val initialModel : model
 
-        val update: model -> action -> model
+  type action
 
-        val render: model -> (action -> unit) -> vdom
-    end)
-= struct
-    module D = Webapi.Dom
+  val update : model -> action -> model
 
-    (**
-    * Converts a `Dom.text` node to a `Dom.node` node, created since
-    * `Document.appendChild` doesn't let you append `Dom.text` nodes while the
-    * javascript DOM API does.
-    *)
-    external __unsafe__textNode_to_node: Dom.text -> Dom.node = "%identity"
-    (**
-    * Converts a `Dom.element` node to a `Dom.node` node, created since
-    * bs-webapi doesn't let you work with `Dom.element` nodes as if they
-    * were nodes.
-    *)
-    external __unsafe__element_to_node: Dom.element -> Dom.node = "%identity"
+  val render : model -> (action -> unit) -> vdom
+end) =
+struct
+  module D = Webapi.Dom
 
-    let initialModel = App.initialModel
-    let render = App.render
-    type action = App.action
-    let update = App.update
+  let get_exn ?(msg = "Option.get") () opt =
+    match opt with Some x -> x | None -> raise (Invalid_argument msg)
 
-    (**
-    * Removes all children from the `root` node.
-    *)
-    let clear_root (root: Dom.node): unit =
-        while (
-            match D.Node.firstChild root with
-            | Some child ->
-                D.Node.removeChild child root |> ignore;
-                true
-            | None -> false
-            )
-        do () done
+  (*
+   * Converts a `Dom.text` node to a `Dom.node` node, created since
+   * `Document.appendChild` doesn't let you append `Dom.text` nodes while the
+   * javascript DOM API does.
+   *)
+  external __unsafe__textNode_to_node : Dom.text -> Dom.node = "%identity"
 
-    let rec create_tree (root: Dom.node) (vdom: html): Dom.node = match vdom with
-        | Element(name,attributes,handlers,children) ->
-            let elem = D.Document.createElement name D.document in
+  (* Converts a `Dom.element` node to a `Dom.node` node, created since
+   * bs-webapi doesn't let you work with `Dom.element` nodes as if they
+   * were nodes.
+   *)
+  external __unsafe__element_to_node : Dom.element -> Dom.node = "%identity"
 
-            List.fold_left (fun el (a,b) -> ElementRe.setAttribute a b el; el) elem attributes |> ignore;
-            List.fold_left (fun el (a,b) -> ElementRe.addEventListener a b el; el) elem handlers |> ignore;
+  let initialModel = App.initialModel
 
-            let children_trees = List.map (create_tree root) children in
-            List.fold_left (fun el tree -> D.Element.appendChild tree el; el) elem children_trees
-            |> __unsafe__element_to_node
+  let render = App.render
 
-        | Text(text) ->
-            __unsafe__textNode_to_node (D.Document.createTextNode text D.document)
+  let update = App.update
 
-    let get_exn = function
-    | Some x -> x
-    | None   -> raise (Invalid_argument "Option.get")
+  (*
+   * Removes all children from the `root` node.
+   *)
+  let clear_root (root : Dom.node) : unit =
+    while
+      match D.Node.firstChild root with
+      | Some child ->
+          D.Node.removeChild child root |> ignore ;
+          true
+      | None -> false
+    do
+      ()
+    done
 
-    let contains needle haystack =
-        try List.find (fun x -> x = needle) haystack; true
-        with _ -> false
-
-    (* https://reactjs.org/docs/reconciliation.html *)
-    let rec reconcile (root: Dom.node) (old_vdom: vdom) (new_vdom: vdom): unit =
-        match (old_vdom, new_vdom) with
-        (* TODO: handle handlers *)
-        (* The int_of_string error from get might be coming from here... *)
-        | Element(n1,a1,_h1,c1),Element(n2,a2,_h2,c2) when n1=n2 ->
-            let () = if a1 = a2
-            then ()
-            else
-                (* Foreach of the attributes in a1 if it's not in a2 then remove it *)
-                List.fold_left (
-                    fun acc attr ->
-                        if contains attr a2
-                        then ()
-                        else
-                            D.Element.removeAttribute
-                                (fst attr)
-                                (ElementRe.ofNode root |> get_exn);
-                            acc
-                ) root a1 |> ignore;
-                (* Foreach of the attributes in a2 if it's not in a1 then add it *)
-                List.fold_left (
-                    fun acc attr ->
-                        if contains attr a1
-                        then ()
-                        else
-                            D.Element.setAttribute
-                                (fst attr)
-                                (snd attr)
-                                (ElementRe.ofNode root |> get_exn);
-                            acc
-                ) root a2 |> ignore;
-            in
-            (* If the lists have the same lenght simply iterate *)
-            let () = if (List.length c1) = (List.length c2)
-            then
-                (List.fold_left2
-                (fun acc a b ->
-                    let child = D.NodeList.item acc (D.Node.childNodes root) |> get_exn
-                    in
-                    reconcile child a b;
-                    acc+1
-                )
-                0
-                c1
-                c2
-                |> ignore)
-            else failwith "unimplemented with list with different length"
-            in ()
-        | Text(t1),Text(t2) when t1 = t2 -> ()
-        | Text(_),Text(t2) -> D.Node.setTextContent root t2
-        | _ ->
-            clear_root root;
-            let new_tree = create_tree root new_vdom in
-            D.Node.appendChild new_tree root
-
-    let update_dom (root: Dom.element) (old_vdom:vdom option) (new_vdom: vdom): unit =
-        let root = __unsafe__element_to_node root in
-        match old_vdom with
-        | None ->
-            clear_root root;
-            let new_tree = create_tree root new_vdom in
-            D.Node.appendChild new_tree root
-        | Some(old_vdom) ->
-            let elem = D.Node.firstChild root |> get_exn in
-            reconcile elem old_vdom new_vdom
-
-    let start_app (root: Dom.element) =
-        let current_model = ref initialModel in
-        let current_vdom: (Html.vdom option) ref = ref (None) in
-
-        (* The function called every time an action is sent *)
-        let rec tick action =
-            Js.log "Tick";
-            (* Update the model based on the action *)
-            current_model := update !current_model action;
-            Js.log !current_model;
-
-            (* Render the next vdom based on the model *)
-            let next_vdom = render !current_model tick in
-
-            (* Update the DOM with the old vdom and the new on *)
-            update_dom root !current_vdom next_vdom;
-
-            (* Update the vdom *)
-            current_vdom := Some next_vdom;
+  let apply_attributes el attr =
+    match attr with
+    | Event (event, handler) -> ElementRe.addEventListener event handler el
+    | Style (k, v) ->
+        let style =
+          HtmlElementRe.style (HtmlElementRe.ofElement el |> get_exn ())
         in
+        CssStyleDeclarationRe.setProperty k v "" style
+    | Prop (k, v) -> (
+      (* TODO: make decent, like elm'vdom *)
+      let input = (HtmlInputElementRe.ofElement el |> get_exn ()) in
+      match k with
+      | "value" -> HtmlInputElementRe.setValue input v
+      | "checked" ->
+          HtmlInputElementRe.setChecked
+            input
+            (bool_of_string v)
+      | _ -> failwith "cannot add unknown prop" )
+    | Attr (k, v) -> ElementRe.setAttribute k v el
 
-        (* First render *)
-        let next_vdom = render !current_model tick in
-        update_dom root !current_vdom next_vdom;
-        current_vdom := Some next_vdom;
+  let rec create_tree (vdom : html) : Dom.node =
+    match vdom with
+    | Element (name, attributes, children) ->
+        let elem = D.Document.createElement name D.document in
+        List.fold_left
+          (fun el attr -> apply_attributes el attr ; el)
+          elem attributes
+        |> ignore ;
+        let children_trees = List.map create_tree children in
+        List.fold_left
+          (fun el tree ->
+            D.Element.appendChild tree el ;
+            el )
+          elem children_trees
+        |> __unsafe__element_to_node
+    | Text text ->
+        __unsafe__textNode_to_node (D.Document.createTextNode text D.document)
+
+  let contains needle haystack =
+    try
+      List.find (fun x -> x = needle) haystack ;
+      true
+    with _ -> false
+
+  let attributes_equal a b =
+    let fn = function Event (_, _) -> false | _ -> true in
+    List.filter fn a = List.filter fn b
+
+  (* Applies fn to all elements in b but not in a *)
+  let fold_intersection a b fn =
+    List.fold_left
+      (fun () x ->
+        if contains x a then () else fn x ;
+        () )
+      () b
+
+  (* https://reactjs.org/docs/reconciliation.html *)
+  let rec reconcile (root : Dom.node) (old_vdom : vdom) (new_vdom : vdom) :
+      unit =
+    match (old_vdom, new_vdom) with
+    (* The int_of_string error from get might be coming from here... *)
+    | ( Element (name, attributes, children)
+      , Element (name', attributes', children') )
+      when name = name' ->
+        let () =
+          (* If the attributes are equal then do nothing *)
+          if attributes_equal attributes attributes' then ()
+          else
+            (* If the differ, reconcile then *)
+            let root_elem = ElementRe.ofNode root |> get_exn () in
+            (* Remove all of the attributes which aren't anymore in attributes *)
+            fold_intersection attributes' attributes (function
+              | Attr (k, v) -> ElementRe.removeAttribute k root_elem
+              | Prop (k, v) -> (
+                match k with
+                | "value" ->
+                    let input =
+                      HtmlInputElementRe.ofElement root_elem |> get_exn ()
+                    in
+                    HtmlInputElementRe.setValue input ""
+                | "checked" -> ElementRe.setNodeValue root_elem Js.Null.empty
+                | _ -> failwith "cannot remove unknown prop" )
+              | Event (e, h) -> ElementRe.removeEventListener e h root_elem
+              | Style (k, v) -> failwith "cannot remove style" )
+            |> ignore ;
+            (* Add all of the new attributes (i.e. the ones not in attributes) *)
+            fold_intersection attributes attributes' (fun attr ->
+                apply_attributes root_elem attr )
+            |> ignore
+        in
+        (* TODO: Find a better solution for this, we are re registering
+         all of the event handles at each re-render *)
+        (* TODO: maybe this should not happen at all, logic should be handled
+         in the update function, not at the event level... *)
+        (* TODO: figure out how to handle this *)
+        (* let () = *)
+        (* Remove all of the old event handlers
+          List.iter
+            (fun (event_name, handler) ->
+              ElementRe.removeEventListener event_name handler
+                (ElementRe.ofNode root |> get_exn ()) )
+            handlers ;
+          (* Add all of the new event handlers *)
+          List.iter
+            (fun (event_name, handler) ->
+              ElementRe.addEventListener event_name handler
+                (ElementRe.ofNode root |> get_exn ()) )
+            handlers' *)
+        (* in *)
+        (* TODO: implement key-based list diffing *)
+        (* If the lists have the same lenght simply iterate *)
+        let () =
+          match compare (List.length children) (List.length children') with
+          (* old children is shorter than new children *)
+          | -1 ->
+              let min_len = List.length children in
+              let children'_first, children'_excess =
+                Belt.List.splitAt children' min_len |> get_exn ()
+              in
+              (* Perform reconcile on all of the old children *)
+              let () =
+                List.fold_left2
+                  (fun acc a b ->
+                    let child =
+                      D.NodeList.item acc (D.Node.childNodes root)
+                      |> get_exn ()
+                    in
+                    reconcile child a b ; acc + 1 )
+                  0 children children'_first
+                |> ignore
+              in
+              (* Then simply insert the new ones *)
+              List.iter
+                (fun child ->
+                  let new_tree = create_tree child in
+                  D.Node.appendChild new_tree root )
+                children'_excess
+          (* old children is longer than new children *)
+          | 1 ->
+              let excess_len = List.length children - List.length children' in
+              let children_second =
+                Belt.List.drop children excess_len |> get_exn ()
+              in
+              (* First remove the excess *)
+              let () =
+                for _ = 0 to excess_len - 1 do
+                  match D.Node.firstChild root with
+                  | Some child -> D.Node.removeChild child root |> ignore
+                  | None -> ()
+                done
+              in
+              assert (List.length children_second = List.length children') ;
+              (* Then perform reconcile *)
+              List.fold_left2
+                (fun acc a b ->
+                  let child =
+                    D.NodeList.item acc (D.Node.childNodes root)
+                    |> get_exn ?msg:(Some "Cannot") ()
+                  in
+                  reconcile child a b ; acc + 1 )
+                0 children_second children'
+              |> ignore
+          (* same length *)
+          | 0 ->
+              List.fold_left2
+                (fun acc a b ->
+                  let child =
+                    D.NodeList.item acc (D.Node.childNodes root) |> get_exn ()
+                  in
+                  reconcile child a b ; acc + 1 )
+                0 children children'
+              |> ignore
+          | _ -> failwith "impossible"
+        in
+        ()
+    | Text t1, Text t2 when t1 = t2 -> ()
+    | Text _, Text t2 -> D.Node.setTextContent root t2
+    | _ ->
+        clear_root root ;
+        let new_tree = create_tree new_vdom in
+        D.Node.appendChild new_tree root
+
+  let update_dom (root : Dom.element) (old_vdom : vdom option)
+      (new_vdom : vdom) : unit =
+    let root = __unsafe__element_to_node root in
+    match old_vdom with
+    | None ->
+        clear_root root ;
+        let new_tree = create_tree new_vdom in
+        D.Node.appendChild new_tree root
+    | Some old_vdom ->
+        let elem = D.Node.firstChild root |> get_exn () in
+        reconcile elem old_vdom new_vdom
+
+  let start_app (root : Dom.element) =
+    let current_model = ref initialModel in
+    let current_vdom : Html.vdom option ref = ref None in
+    (* The function called every time an action is sent *)
+    let rec tick action =
+      (* Update the model based on the action *)
+      current_model := update !current_model action ;
+      (* Render the next vdom based on the model *)
+      let next_vdom = render !current_model tick in
+      (* Update the DOM with the old vdom and the new on *)
+      update_dom root !current_vdom next_vdom ;
+      (* Update the vdom *)
+      current_vdom := Some next_vdom
+    in
+    (* First render *)
+    let next_vdom = render !current_model tick in
+    update_dom root !current_vdom next_vdom ;
+    current_vdom := Some next_vdom
 end
