@@ -1,4 +1,3 @@
-(* TODO: ignore *)
 [%%debugger.chrome]
 
 open Html
@@ -17,11 +16,11 @@ end) =
 struct
   module D = Webapi.Dom
 
-  let get_exn ?(msg = "Option.get") () opt =
-    match opt with Some x -> x | None -> raise (Invalid_argument msg)
+  (* Unwraps an option, raising invalid argument if None is passed *)
+  let get_exn ?(msg = "Option.get") () =
+    function Some x -> x | None -> raise (Invalid_argument msg)
 
-  (*
-   * Converts a `Dom.text` node to a `Dom.node` node, created since
+  (* Converts a `Dom.text` node to a `Dom.node` node, created since
    * `Document.appendChild` doesn't let you append `Dom.text` nodes while the
    * javascript DOM API does.
    *)
@@ -34,14 +33,10 @@ struct
   external __unsafe__element_to_node : Dom.element -> Dom.node = "%identity"
 
   let initialModel = App.initialModel
-
   let render = App.render
-
   let update = App.update
 
-  (*
-   * Removes all children from the `root` node.
-   *)
+  (* Removes all children from the `root` node *)
   let clear_root (root : Dom.node) : unit =
     while
       match D.Node.firstChild root with
@@ -53,7 +48,8 @@ struct
       ()
     done
 
-  let apply_attributes el attr =
+  (* Adds the attribute to a dom element `el`. E.g. adds placeholder="foo" *)
+  let add_attribute el attr =
     match attr with
     | Event (event, handler) -> ElementRe.addEventListener event handler el
     | Style (k, v) ->
@@ -62,23 +58,20 @@ struct
         in
         CssStyleDeclarationRe.setProperty k v "" style
     | Prop (k, v) -> (
-      (* TODO: make decent, like elm'vdom *)
-      let input = (HtmlInputElementRe.ofElement el |> get_exn ()) in
-      match k with
-      | "value" -> HtmlInputElementRe.setValue input v
-      | "checked" ->
-          HtmlInputElementRe.setChecked
-            input
-            (bool_of_string v)
-      | _ -> failwith "cannot add unknown prop" )
+        let input = HtmlInputElementRe.ofElement el |> get_exn () in
+        match k with
+        | "value" -> HtmlInputElementRe.setValue input v
+        | "checked" -> HtmlInputElementRe.setChecked input (bool_of_string v)
+        | _ -> failwith "cannot add unknown prop" )
     | Attr (k, v) -> ElementRe.setAttribute k v el
 
-  let rec create_tree (vdom : html) : Dom.node =
+  (* Creates a tree of dom nodes using the virtual dom description *)
+  let rec create_tree (vdom : vdom) : Dom.node =
     match vdom with
     | Element (name, attributes, children) ->
         let elem = D.Document.createElement name D.document in
         List.fold_left
-          (fun el attr -> apply_attributes el attr ; el)
+          (fun el attr -> add_attribute el attr ; el)
           elem attributes
         |> ignore ;
         let children_trees = List.map create_tree children in
@@ -91,18 +84,22 @@ struct
     | Text text ->
         __unsafe__textNode_to_node (D.Document.createTextNode text D.document)
 
+  (* Checks if the element is in the list. O(n) *)
   let contains needle haystack =
     try
       List.find (fun x -> x = needle) haystack ;
       true
     with _ -> false
 
+  (* Compare two lists of attributes: compares the handlers by reference and the rest by value *)
   let attributes_equal a b =
     let fn = function Event (_, _) -> false | _ -> true in
     List.filter fn a = List.filter fn b
+    && List.filter (fun x -> not (fn x)) a
+       == List.filter (fun x -> not (fn x)) b
 
-  (* Applies fn to all elements in b but not in a *)
-  let fold_intersection a b fn =
+  (* Applies fn to all elements in b but not in a. O(n^2) *)
+  let iter_b_minus_a a b fn =
     List.fold_left
       (fun () x ->
         if contains x a then () else fn x ;
@@ -113,7 +110,6 @@ struct
   let rec reconcile (root : Dom.node) (old_vdom : vdom) (new_vdom : vdom) :
       unit =
     match (old_vdom, new_vdom) with
-    (* The int_of_string error from get might be coming from here... *)
     | ( Element (name, attributes, children)
       , Element (name', attributes', children') )
       when name = name' ->
@@ -124,9 +120,9 @@ struct
             (* If the differ, reconcile then *)
             let root_elem = ElementRe.ofNode root |> get_exn () in
             (* Remove all of the attributes which aren't anymore in attributes *)
-            fold_intersection attributes' attributes (function
-              | Attr (k, v) -> ElementRe.removeAttribute k root_elem
-              | Prop (k, v) -> (
+            iter_b_minus_a attributes' attributes (function
+              | Attr (k, _) -> ElementRe.removeAttribute k root_elem
+              | Prop (k, _) -> (
                 match k with
                 | "value" ->
                     let input =
@@ -136,32 +132,14 @@ struct
                 | "checked" -> ElementRe.setNodeValue root_elem Js.Null.empty
                 | _ -> failwith "cannot remove unknown prop" )
               | Event (e, h) -> ElementRe.removeEventListener e h root_elem
-              | Style (k, v) -> failwith "cannot remove style" )
+              | Style (_, _) ->
+                  (* TODO: finish *) failwith "cannot remove style" )
             |> ignore ;
             (* Add all of the new attributes (i.e. the ones not in attributes) *)
-            fold_intersection attributes attributes' (fun attr ->
-                apply_attributes root_elem attr )
+            iter_b_minus_a attributes attributes' (fun attr ->
+                add_attribute root_elem attr )
             |> ignore
         in
-        (* TODO: Find a better solution for this, we are re registering
-         all of the event handles at each re-render *)
-        (* TODO: maybe this should not happen at all, logic should be handled
-         in the update function, not at the event level... *)
-        (* TODO: figure out how to handle this *)
-        (* let () = *)
-        (* Remove all of the old event handlers
-          List.iter
-            (fun (event_name, handler) ->
-              ElementRe.removeEventListener event_name handler
-                (ElementRe.ofNode root |> get_exn ()) )
-            handlers ;
-          (* Add all of the new event handlers *)
-          List.iter
-            (fun (event_name, handler) ->
-              ElementRe.addEventListener event_name handler
-                (ElementRe.ofNode root |> get_exn ()) )
-            handlers' *)
-        (* in *)
         (* TODO: implement key-based list diffing *)
         (* If the lists have the same lenght simply iterate *)
         let () =
@@ -249,7 +227,7 @@ struct
 
   let start_app (root : Dom.element) =
     let current_model = ref initialModel in
-    let current_vdom : Html.vdom option ref = ref None in
+    let current_vdom = ref None in
     (* The function called every time an action is sent *)
     let rec tick action =
       (* Update the model based on the action *)

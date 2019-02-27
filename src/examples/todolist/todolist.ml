@@ -1,3 +1,5 @@
+[%%debugger.chrome]
+
 open Oui
 
 module App = Make_App (struct
@@ -7,20 +9,20 @@ module App = Make_App (struct
 
   let initialModel = {todos= []; form= ""}
 
-  type action = AddTodo | RemoveTodo of string | UpdateText of string | Clear
+  type action = AddTodo | RemoveTodo of string | UpdateText of string
 
   let update model (action : action) : model =
     let todos' =
       match action with
       | AddTodo -> model.form :: model.todos
-      | RemoveTodo name -> List.filter (fun todo -> todo <> name) model.todos
+      | RemoveTodo name ->
+          List.filter (fun todo -> todo <> name) model.todos
       | _ -> model.todos
     in
     let form' =
       match action with
       | UpdateText text -> text
       | AddTodo -> ""
-      | Clear -> ""
       | _ -> model.form
     in
     {todos= todos'; form= form'}
@@ -28,28 +30,20 @@ module App = Make_App (struct
   let render model send =
     div []
       [ h1 [] [text "Hello"]
-      ; text model.form
-      ; button [Event ("click", fun _e -> send Clear)] [text "clear"]
-      ; form
-          [Event ("submit", fun e -> EventRe.preventDefault e ; send AddTodo)]
+      ; form [onSubmit send AddTodo]
           [ input
-              [ Attr ("type", "text")
-              ; Prop ("value", model.form)
-              ; Attr ("placeholder", "your todo text here")
-              ; Event
-                  ( "input"
-                  , fun _event ->
-                      send (UpdateText [%raw {|_event.target.value|}]) ) ]
+              [ type_ "text"
+              ; value model.form
+              ; placeholder "your todo text here"
+              ; onInput send (fun a -> UpdateText a) ]
               []
-          ; button [Attr ("type", "submit")] [text "Add"] ]
+          ; button [type_ "submit"] [text "Add"] ]
       ; ul []
           (List.map
              (fun todo ->
                li []
-                 [ Text todo
-                 ; button
-                     [Event ("click", fun _e -> send (RemoveTodo todo))]
-                     [text "X"] ] )
+                 [text todo; button [onClick send (RemoveTodo todo)] [text "X"]]
+               )
              model.todos) ]
 end)
 

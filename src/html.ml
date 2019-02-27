@@ -30,6 +30,8 @@ type html =
 
 type vdom = html
 
+let text a = Text a
+
 let div attributes children = Element("div",attributes,children)
 let h1 attributes children = Element("h1",attributes,children)
 let form attributes children = Element("form",attributes,children)
@@ -40,5 +42,11 @@ let button attributes children = Element("button",attributes,children)
 let br attributes children = Element("br",attributes,children)
 
 let onClick send action = Event ("click", fun _e -> send action)
+let onInput send action = Event ("input", fun _e -> send (action [%raw {|_e.target.value|}]))
+let onSubmit send action = Event ("submit", fun e -> EventRe.preventDefault e; send action)
 
-let text a = Text a
+let type_ t = Attr("type", t)
+let placeholder p = Attr("placeholder", p)
+
+
+let value v = Prop("value", v)
