@@ -48,8 +48,8 @@ struct
       ()
     done
 
-  (* Adds the attribute to a dom element `el`. E.g. adds placeholder="foo" *)
-  let add_attribute el attr =
+  (* Applies (adds) the attribute to a dom element `el`. E.g. adds placeholder="foo" *)
+  let apply_attribute el attr =
     match attr with
     | Event (event, handler) -> ElementRe.addEventListener event handler el
     | Style (k, v) ->
@@ -71,7 +71,7 @@ struct
     | Element (name, attributes, children) ->
         let elem = D.Document.createElement name D.document in
         List.fold_left
-          (fun el attr -> add_attribute el attr ; el)
+          (fun el attr -> apply_attribute el attr ; el)
           elem attributes
         |> ignore ;
         let children_trees = List.map create_tree children in
@@ -132,12 +132,14 @@ struct
                 | "checked" -> ElementRe.setNodeValue root_elem Js.Null.empty
                 | _ -> failwith "cannot remove unknown prop" )
               | Event (e, h) -> ElementRe.removeEventListener e h root_elem
-              | Style (_, _) ->
-                  (* TODO: finish *) failwith "cannot remove style" )
+              | Style (k, _v) ->
+                let style = HtmlElementRe.style (HtmlElementRe.ofElement root_elem |> get_exn ()) in
+                CssStyleDeclarationRe.removeProperty k style |> ignore
+            )
             |> ignore ;
             (* Add all of the new attributes (i.e. the ones not in attributes) *)
             iter_b_minus_a attributes attributes' (fun attr ->
-                add_attribute root_elem attr )
+                apply_attribute root_elem attr )
             |> ignore
         in
         (* TODO: implement key-based list diffing *)

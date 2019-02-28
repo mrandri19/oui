@@ -7,7 +7,7 @@ module App = Make_App (struct
 
   type model = {todos: string list; form: string}
 
-  let initialModel = {todos= []; form= ""}
+  let initialModel = {todos= ["a";"b";"c";"d"]; form= ""}
 
   type action = AddTodo | RemoveTodo of string | UpdateText of string
 
@@ -29,7 +29,7 @@ module App = Make_App (struct
 
   let render model send =
     div []
-      [ h1 [] [text "Hello"]
+      [ h1 [Style("color","rebeccapurple");Style("margin","1em auto 0 auto")] [text "Todolist"]
       ; form [onSubmit send AddTodo]
           [ input
               [ type_ "text"
